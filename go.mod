@@ -1,4 +1,4 @@
-module mks
+module github.com/cumulus13/mks-go
 
 go 1.25.3
 
