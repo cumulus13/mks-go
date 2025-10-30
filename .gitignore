@@ -15,7 +15,3 @@ build/
 traceback.log
 __pycache__/
 *.log
-
-# Added entries (2 items)
-*.exe
-main_go*

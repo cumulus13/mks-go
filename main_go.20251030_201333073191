@@ -1,0 +1,259 @@
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/atotto/clipboard"
+)
+
+func isValidFileName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	// Reserved names in Windows (case-insensitive)
+	reserved := []string{
+		"CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+	}
+	base := strings.Split(name, ".")[0]
+	baseUpper := strings.ToUpper(strings.TrimSpace(base))
+	for _, r := range reserved {
+		if baseUpper == r {
+			return false
+		}
+	}
+
+	// Invalid characters in Windows filenames
+	invalidChars := `<>:"/\|?*`
+	for _, c := range invalidChars {
+		if strings.ContainsRune(name, c) {
+			return false
+		}
+	}
+
+	// Cannot end with space or dot
+	if strings.HasSuffix(name, " ") || strings.HasSuffix(name, ".") {
+		return false
+	}
+
+	return true
+}
+
+// cleanEntry removes tree-drawing characters and returns clean name
+func cleanEntry(line string) string {
+	re := regexp.MustCompile(`^[│├└─\s]*`)
+	clean := re.ReplaceAllString(line, "")
+	return strings.TrimSpace(clean)
+}
+
+// hasTreeSymbols checks if input resembles a tree output
+func hasTreeSymbols(lines []string) bool {
+	for _, line := range lines {
+		l := strings.TrimSpace(line)
+		if l == "" {
+			continue
+		}
+		if strings.Contains(l, "├──") || strings.Contains(l, "└──") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRootFolder checks if there's a plausible root (e.g., "mydir/")
+func hasRootFolder(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	first := strings.TrimSpace(lines[0])
+	return strings.HasSuffix(first, "/") && !strings.Contains(first, " ")
+}
+
+// isValidStructure: minimal but smart validation
+func isValidStructure(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+
+	// Reject obvious Go code
+	for _, line := range lines {
+		l := strings.TrimSpace(line)
+		if l == "package main" || l == "import (" || strings.HasPrefix(l, "func ") || strings.Contains(l, `:=`) {
+			return false
+		}
+	}
+	
+	nonEmpty := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty == 0 {
+		return false
+	}
+
+	// Accept if:
+	// - It looks like a tree (has ├── or └──), OR
+	// - First line is a root folder like "project/"
+	return hasTreeSymbols(lines) || hasRootFolder(lines)
+}
+
+// estimateDepth: rough but effective for tree-like indentation
+func estimateDepth(line string) int {
+	// Count how many "│   " prefixes exist
+	depth := 0
+	temp := line
+	for strings.HasPrefix(temp, "│   ") {
+		depth++
+		temp = temp[4:]
+	}
+	// Also count leading spaces in groups of 4
+	stripped := strings.TrimLeft(line, "│├└─ ")
+	leadingSpaces := len(line) - len(stripped)
+	depth += leadingSpaces / 4
+	return depth
+}
+
+func createStructure(lines []string) error {
+	var currentPath []string
+	rootHandled := false
+
+	for _, line := range lines {
+		// original := line
+		line = strings.ReplaceAll(line, "\t", "    ") // normalize tabs
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		// Handle possible root line (e.g., "myapp/")
+		if !rootHandled && strings.HasSuffix(trimmed, "/") &&
+			!strings.Contains(trimmed, "├") &&
+			!strings.Contains(trimmed, "└") &&
+			!strings.Contains(trimmed, "│") &&
+			strings.Count(trimmed, "/") == 1 {
+
+			root := strings.TrimSuffix(trimmed, "/")
+			if err := os.MkdirAll(root, 0755); err != nil {
+				return err
+			}
+			currentPath = []string{root}
+			rootHandled = true
+			continue
+		}
+
+		entry := cleanEntry(line)
+		if entry == "" {
+			continue
+		}
+
+		// Determine if it's a directory
+		isDir := strings.HasSuffix(entry, "/")
+		// name := entry
+		// if isDir {
+		// 	name = strings.TrimSuffix(name, "/")
+		// }
+		name := entry
+		if isDir {
+			name = strings.TrimSuffix(name, "/")
+		}
+		if !isValidFileName(name) {
+			return fmt.Errorf("invalid file or folder name: %q", name)
+		}
+
+		// Estimate depth and adjust path
+		depth := estimateDepth(line)
+		if rootHandled {
+			// After root, depth 0 = direct child of root
+			if depth < len(currentPath) {
+				currentPath = currentPath[:depth]
+			}
+		} else {
+			// No explicit root: treat depth 0 as root level
+			if depth < len(currentPath) {
+				currentPath = currentPath[:depth]
+			}
+		}
+
+		fullPath := filepath.Join(append(currentPath, name)...)
+
+		if isDir {
+			if err := os.MkdirAll(fullPath, 0755); err != nil {
+				return err
+			}
+			currentPath = append(currentPath[:depth], name)
+		} else {
+			dir := filepath.Dir(fullPath)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			f, err := os.Create(fullPath)
+			if err != nil {
+				return err
+			}
+			f.Close()
+		}
+	}
+
+	return nil
+}
+
+func readInput() ([]string, string, error) {
+	if len(os.Args) > 1 {
+		file, err := os.Open(os.Args[1])
+		if err != nil {
+			return nil, "", err
+		}
+		defer file.Close()
+		var lines []string
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+		}
+		return lines, "file", scanner.Err()
+	}
+
+	content, err := clipboard.ReadAll()
+	if err != nil {
+		return nil, "", fmt.Errorf("clipboard error: %v (is xclip/xsel installed on Linux?)", err)
+	}
+	if content == "" {
+		return nil, "", fmt.Errorf("clipboard is empty")
+	}
+	return strings.Split(content, "\n"), "clipboard", nil
+}
+
+func main() {
+	lines, source, err := readInput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Input error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Read from %s (%d lines)\n", source, len(lines))
+
+	if !isValidStructure(lines) {
+		fmt.Fprintln(os.Stderr, "❌ Rejected: input does not resemble a valid directory tree structure.")
+		fmt.Fprintln(os.Stderr, "Expected format like:")
+		fmt.Fprintln(os.Stderr, "  myproject/")
+		fmt.Fprintln(os.Stderr, "  ├── file.txt")
+		fmt.Fprintln(os.Stderr, "  └── folder/")
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ Structure accepted. Creating files and folders...")
+
+	if err := createStructure(lines); err != nil {
+		fmt.Fprintf(os.Stderr, "Creation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ Done!")
+}

@@ -1,0 +1,210 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/atotto/clipboard"
+)
+
+func isValidFileName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false
+	}
+	upper := strings.ToUpper(trimmed)
+	base := strings.Split(upper, ".")[0]
+	reserved := []string{
+		"CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+	}
+	for _, r := range reserved {
+		if base == r {
+			return false
+		}
+	}
+	for _, c := range `<>:"/\|?*` {
+		if strings.ContainsRune(name, c) {
+			return false
+		}
+	}
+	if strings.HasSuffix(trimmed, " ") || strings.HasSuffix(trimmed, ".") {
+		return false
+	}
+	return true
+}
+
+func createStructure(lines []string) error {
+	var currentPath []string
+
+	for i, originalLine := range lines {
+		trimmed := strings.TrimSpace(originalLine)
+		if trimmed == "" {
+			continue
+		}
+
+		// Handle root: first line, ends with /, no tree symbols
+		if len(currentPath) == 0 && i == 0 && strings.HasSuffix(trimmed, "/") &&
+			!strings.Contains(trimmed, "├──") &&
+			!strings.Contains(trimmed, "└──") {
+
+			rootName := strings.TrimSuffix(trimmed, "/")
+			if !isValidFileName(rootName) {
+				return fmt.Errorf("invalid root folder name: %q", rootName)
+			}
+			if err := os.MkdirAll(rootName, 0755); err != nil {
+				return err
+			}
+			currentPath = []string{rootName}
+			continue
+		}
+
+		// Parse tree entry: strip "│   " prefixes first
+		workLine := originalLine
+
+		// Remove all leading "│   " blocks
+		for strings.HasPrefix(workLine, "│   ") {
+			workLine = workLine[4:]
+		}
+
+		// Trim any remaining leading spaces
+		workLine = strings.TrimLeft(workLine, " \t")
+
+		var content string
+		isDir := false
+
+		if strings.HasPrefix(workLine, "├── ") {
+			content = workLine[4:]
+		} else if strings.HasPrefix(workLine, "└── ") {
+			content = workLine[4:]
+		} else {
+			return fmt.Errorf("line %d is not a valid tree entry: %q", i+1, originalLine)
+		}
+
+		if strings.HasSuffix(content, "/") {
+			isDir = true
+			content = strings.TrimSuffix(content, "/")
+		}
+
+		if !isValidFileName(content) {
+			return fmt.Errorf("invalid file/folder name: %q", content)
+		}
+
+		// Calculate depth: count how many "│   " were at the start
+		depth := 0
+		temp := originalLine
+		for strings.HasPrefix(temp, "│   ") {
+			depth++
+			temp = temp[4:]
+		}
+
+		// Adjust path stack
+		if len(currentPath) == 0 {
+			// No root — shouldn't happen if validation passed
+			depth = 0
+		} else {
+			// After root, max depth is len(currentPath)-1
+			if depth >= len(currentPath) {
+				depth = len(currentPath) - 1
+			}
+		}
+
+		currentPath = currentPath[:depth+1]
+
+		fullPath := filepath.Join(append(currentPath, content)...)
+
+		if isDir {
+			if err := os.MkdirAll(fullPath, 0755); err != nil {
+				return err
+			}
+			currentPath = append(currentPath, content)
+		} else {
+			dir := filepath.Dir(fullPath)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			f, err := os.Create(fullPath)
+			if err != nil {
+				return err
+			}
+			f.Close()
+		}
+	}
+
+	return nil
+}
+
+func isValidTree(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+
+	nonEmpty := 0
+	hasTree := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		nonEmpty++
+		// Check if after stripping │   it starts with ├── or └──
+		work := line
+		for strings.HasPrefix(work, "│   ") {
+			work = work[4:]
+		}
+		work = strings.TrimLeft(work, " \t")
+		if strings.HasPrefix(work, "├── ") || strings.HasPrefix(work, "└── ") {
+			hasTree = true
+		}
+	}
+	return nonEmpty > 0 && hasTree
+}
+
+func readInput() ([]string, string, error) {
+	if len(os.Args) > 1 {
+		content, err := os.ReadFile(os.Args[1])
+		if err != nil {
+			return nil, "", err
+		}
+		return strings.Split(string(content), "\n"), "file", nil
+	}
+
+	content, err := clipboard.ReadAll()
+	if err != nil {
+		return nil, "", fmt.Errorf("clipboard error: %v", err)
+	}
+	if content == "" {
+		return nil, "", fmt.Errorf("clipboard is empty")
+	}
+	return strings.Split(content, "\n"), "clipboard", nil
+}
+
+func main() {
+	lines, source, err := readInput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Input error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Read from %s (%d lines)\n", source, len(lines))
+
+	if !isValidTree(lines) {
+		fmt.Fprintln(os.Stderr, "❌ Input is not a valid tree structure.")
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ Valid tree structure detected. Creating...")
+
+	if err := createStructure(lines); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Creation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ Done!")
+}

@@ -1,0 +1,218 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/atotto/clipboard"
+)
+
+// isValidFileName checks for Windows-reserved and invalid names
+func isValidFileName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false
+	}
+	upper := strings.ToUpper(trimmed)
+	base := strings.Split(upper, ".")[0]
+	reserved := []string{
+		"CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+	}
+	for _, r := range reserved {
+		if base == r {
+			return false
+		}
+	}
+	for _, c := range `<>:"/\|?*` {
+		if strings.ContainsRune(name, c) {
+			return false
+		}
+	}
+	if strings.HasSuffix(trimmed, " ") || strings.HasSuffix(trimmed, ".") {
+		return false
+	}
+	return true
+}
+
+// createStructure parses tree-like input and creates files/folders
+func createStructure(lines []string) error {
+	var currentPath []string
+
+	for i, originalLine := range lines {
+		line := originalLine
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		// Handle root directory (only on first non-empty line)
+		if len(currentPath) == 0 && i == 0 && strings.HasSuffix(trimmed, "/") &&
+			!strings.Contains(trimmed, "├──") &&
+			!strings.Contains(trimmed, "└──") {
+
+			rootName := strings.TrimSuffix(trimmed, "/")
+			if !isValidFileName(rootName) {
+				return fmt.Errorf("invalid root folder name: %q", rootName)
+			}
+			if err := os.MkdirAll(rootName, 0755); err != nil {
+				return err
+			}
+			currentPath = []string{rootName}
+			continue
+		}
+
+		// Must be a tree entry: starts with ├── or └── (after optional │   prefixes)
+		var content string
+		isDir := false
+
+		// Remove leading tree graphics to isolate content
+		clean := trimmed
+		if strings.HasPrefix(clean, "├── ") {
+			content = clean[4:]
+		} else if strings.HasPrefix(clean, "└── ") {
+			content = clean[4:]
+		} else {
+			// Not a valid tree line
+			return fmt.Errorf("line %d is not a valid tree entry: %q", i+1, trimmed)
+		}
+
+		if strings.HasSuffix(content, "/") {
+			isDir = true
+			content = strings.TrimSuffix(content, "/")
+		}
+
+		if !isValidFileName(content) {
+			return fmt.Errorf("invalid file/folder name: %q", content)
+		}
+
+		// Calculate depth by counting "│   " at the start of the ORIGINAL line
+		depth := 0
+		temp := originalLine
+		for strings.HasPrefix(temp, "│   ") {
+			depth++
+			temp = temp[4:]
+		}
+
+		// After root, depth=0 means direct child of root → path length should be 1 (just root)
+		// So desired path length BEFORE adding new item = depth + 1
+		desiredLen := depth
+		if len(currentPath) > 0 {
+			// We have a root, so depth 0 → child of root → keep currentPath as [root]
+			// Thus, truncate to depth (not depth+1)
+			if desiredLen >= len(currentPath) {
+				desiredLen = len(currentPath) - 1
+			}
+		} else {
+			// No root: treat as flat
+			if desiredLen >= len(currentPath) {
+				desiredLen = len(currentPath)
+			}
+		}
+
+		if desiredLen < 0 {
+			desiredLen = 0
+		}
+		currentPath = currentPath[:desiredLen]
+
+		fullPath := filepath.Join(append(currentPath, content)...)
+
+		if isDir {
+			if err := os.MkdirAll(fullPath, 0755); err != nil {
+				return err
+			}
+			currentPath = append(currentPath, content)
+		} else {
+			dir := filepath.Dir(fullPath)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			f, err := os.Create(fullPath)
+			if err != nil {
+				return err
+			}
+			f.Close()
+		}
+	}
+
+	return nil
+}
+
+// isValidTree checks if input resembles tree output
+func isValidTree(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+
+	nonEmpty := 0
+	hasTreeEntry := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		nonEmpty++
+		if strings.HasPrefix(trimmed, "├── ") || strings.HasPrefix(trimmed, "└── ") {
+			hasTreeEntry = true
+		}
+	}
+
+	if nonEmpty == 0 {
+		return false
+	}
+
+	// Accept if:
+	// - Has at least one tree entry, OR
+	// - First line is root and rest are tree entries
+	return hasTreeEntry
+}
+
+// readInput reads from file (arg) or clipboard
+func readInput() ([]string, string, error) {
+	if len(os.Args) > 1 {
+		content, err := os.ReadFile(os.Args[1])
+		if err != nil {
+			return nil, "", err
+		}
+		return strings.Split(string(content), "\n"), "file", nil
+	}
+
+	content, err := clipboard.ReadAll()
+	if err != nil {
+		return nil, "", fmt.Errorf("clipboard error: %v", err)
+	}
+	if content == "" {
+		return nil, "", fmt.Errorf("clipboard is empty")
+	}
+	return strings.Split(content, "\n"), "clipboard", nil
+}
+
+func main() {
+	lines, source, err := readInput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Input error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Read from %s (%d lines)\n", source, len(lines))
+
+	if !isValidTree(lines) {
+		fmt.Fprintln(os.Stderr, "❌ Rejected: input must be in 'tree' format (use ├──, └──).")
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ Valid tree structure detected. Creating...")
+
+	if err := createStructure(lines); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Creation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ Done!")
+}
