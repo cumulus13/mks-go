@@ -19,3 +19,6 @@ __pycache__/
 # Added entries (2 items)
 *.exe
 main_go*
+
+# Added entries (1 items)
+*sublime*
