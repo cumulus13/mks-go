@@ -15,7 +15,7 @@ import (
 	"github.com/atotto/clipboard"
 )
 
-// parseTreeLine mengembalikan (indentLevel, name, isDir)
+// parseTreeLine returns (indentLevel, name, isDir)
 func parseTreeLine(line string) (int, string, bool, error) {
 	if i := strings.Index(line, "#"); i >= 0 {
 		line = line[:i]
