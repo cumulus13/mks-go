@@ -3,72 +3,67 @@ package main
 import (
 	"fmt"
 	"os"
-	"io/fs"
 	"path/filepath"
 	"strings"
-	"log"
 
 	"github.com/atotto/clipboard"
 )
 
 // parseTreeLine mengembalikan (indentLevel, name, isDir)
 func parseTreeLine(line string) (int, string, bool, error) {
-	if strings.TrimSpace(line) == "" {
-		return 0, "", false, fmt.Errorf("empty line")
-	}
-
-	// Step 1: hapus komentar
-	if idx := strings.Index(line, "#"); idx != -1 {
-		line = line[:idx]
+	// Hapus komentar
+	if i := strings.Index(line, "#"); i >= 0 {
+		line = line[:i]
 	}
 	line = strings.TrimRight(line, " \t\r\n")
-
 	if line == "" {
-		return 0, "", false, fmt.Errorf("empty after comment removal")
+		return 0, "", false, fmt.Errorf("empty")
 	}
 
-	// Step 2: hitung indent level
-	indent := 0
-	i := 0
-	for i < len(line) {
-		// Cocokkan "│   "
-		if strings.HasPrefix(line[i:], "│   ") {
-			indent++
-			i += 4
-		} else if strings.HasPrefix(line[i:], "    ") { // 4 spasi
-			indent++
-			i += 4
-		} else if line[i] == '\t' {
-			indent++
-			i++
+	// Ambil seluruh bagian setelah karakter terakhir yang bukan bagian dari nama
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return 0, "", false, fmt.Errorf("no fields")
+	}
+
+	rawName := fields[len(fields)-1]
+	isDir := strings.HasSuffix(rawName, "/")
+	name := strings.TrimSuffix(rawName, "/")
+	name = strings.TrimSpace(name)
+
+	if name == "" || !isValidFileName(name) {
+		return 0, "", false, fmt.Errorf("invalid name: %q", name)
+	}
+
+	// Sekarang hitung indent: cari posisi awal nama asli dalam line
+	nameStart := strings.LastIndex(line, name)
+	if nameStart == -1 {
+		// fallback: anggap indent 0
+		return 0, name, isDir, nil
+	}
+
+	prefix := line[:nameStart]
+	// Normalisasi prefix: ganti semua non-spasi jadi spasi
+	var norm strings.Builder
+	for _, c := range prefix {
+		if c == ' ' || c == '\t' {
+			norm.WriteRune(c)
+		} else {
+			norm.WriteRune(' ')
+		}
+	}
+	spaceCount := 0
+	for _, c := range norm.String() {
+		if c == ' ' {
+			spaceCount++
 		} else {
 			break
 		}
 	}
+	indent := spaceCount / 4
 
-	// Step 3: sisa string setelah indent
-	remaining := strings.TrimSpace(line[i:])
-
-	// Step 4: cek apakah diakhiri /
-	isDir := false
-	if strings.HasSuffix(remaining, "/") {
-		isDir = true
-		remaining = strings.TrimSuffix(remaining, "/")
-		remaining = strings.TrimSpace(remaining)
-	}
-
-	// Step 5: hapus prefix seperti "├── ", "└── "
-	remaining = strings.TrimPrefix(remaining, "├── ")
-	remaining = strings.TrimPrefix(remaining, "└── ")
-
-	// Step 6: validasi nama
-	if remaining == "" {
-		return 0, "", false, fmt.Errorf("no name found")
-	}
-
-	return indent, remaining, isDir, nil
+	return indent, name, isDir, nil
 }
-
 func isValidFileName(name string) bool {
 	if name == "" || len(name) > 255 {
 		return false
@@ -100,168 +95,43 @@ func isValidFileName(name string) bool {
 	return true
 }
 
-// func extractNameFromLine(line string) (name string, isDir bool) {
-// 	trimmed := strings.TrimRight(line, "\r\n")
-// 	if strings.HasSuffix(trimmed, "/") {
-// 		isDir = true
-// 		trimmed = strings.TrimSuffix(trimmed, "/")
-// 	}
-// 	fields := strings.Fields(trimmed)
-// 	if len(fields) == 0 {
-// 		return "", false
-// 	}
-// 	name = fields[len(fields)-1]
-// 	return name, isDir
-// }
-
-func extractNameFromLine(line string) (name string, isDir bool) {
-	// Trim ALL trailing whitespace (including spaces/tabs), not just \r\n
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" {
-		return "", false
-	}
-
-	if strings.HasSuffix(trimmed, "/") {
-		isDir = true
-		trimmed = strings.TrimSuffix(trimmed, "/")
-		trimmed = strings.TrimSpace(trimmed) // in case spaces were between name and /
-	}
-
-	fields := strings.Fields(trimmed)
-	if len(fields) == 0 {
-		return "", false
-	}
-	name = fields[len(fields)-1]
-	return name, isDir
-}
-
-func getIndentLevel(line string) int {
-	// Count visual indent: each "│   " = 1 level, each 4 spaces = 1 level
-	level := 0
-	i := 0
-	for i < len(line) {
-		if strings.HasPrefix(line[i:], "│   ") {
-			level++
-			i += 4
-		} else if line[i] == ' ' {
-			// Count spaces in groups of 4
-			spaces := 0
-			for i < len(line) && line[i] == ' ' {
-				spaces++
-				i++
-			}
-			level += spaces / 4
-		} else if line[i] == '\t' {
-			level++
-			i++
-		} else {
-			break
-		}
-	}
-	return level
-}
-
-func removeComment(line string) string {
-	if idx := strings.Index(line, "#"); idx != -1 {
-		// Trim the comment section
-		line = line[:idx]
-	}
-	// Optional: trim trailing space after uncommenting
-	return strings.TrimRight(line, " \t")
-}
-
-// func createStructure(lines []string) error {
-// 	var pathStack []string
-
-// 	for i, line := range lines {
-// 		cleanLine := removeComment(line)
-		
-// 		// stripped := strings.TrimRight(strings.TrimLeft(line, " \t"), " \t\r\n")
-// 		stripped := strings.TrimSpace(cleanLine)
-// 		if stripped == "" {
-// 		    continue
-// 		}
-
-// 		// First line ending with / is root
-// 		if i == 0 && strings.HasSuffix(stripped, "/") {
-// 			root := strings.TrimSuffix(stripped, "/")
-// 			if !isValidFileName(root) {
-// 				return fmt.Errorf("invalid root name: %q", root)
-// 			}
-// 			if err := os.MkdirAll(root, 0755); err != nil {
-// 				return err
-// 			}
-// 			pathStack = []string{root}
-// 			continue
-// 		}
-
-// 		name, isDir := extractNameFromLine(line)
-// 		if !isValidFileName(name) {
-// 			return fmt.Errorf("invalid name at line %d: %q", i+1, name)
-// 		}
-
-// 		level := getIndentLevel(line)
-
-// 		if len(pathStack) > 0 {
-// 			if level >= len(pathStack) {
-// 				level = len(pathStack) - 1
-// 			}
-// 		} else {
-// 			level = 0
-// 		}
-
-// 		pathStack = pathStack[:level+1]
-
-// 		fullPath := filepath.Join(append(pathStack, name)...)
-
-// 		if isDir {
-// 			if err := os.MkdirAll(fullPath, 0755); err != nil {
-// 				return err
-// 			}
-// 			pathStack = append(pathStack, name)
-// 		} else {
-// 			dir := filepath.Dir(fullPath)
-// 			if err := os.MkdirAll(dir, 0755); err != nil {
-// 				return err
-// 			}
-// 			f, err := os.Create(fullPath)
-// 			if err != nil {
-// 				return err
-// 			}
-// 			f.Close()
-// 		}
-// 	}
-
-// 	return nil
-// }
-
 func createStructure(lines []string) error {
 	var pathStack []string
 
-	for i, line := range lines {
+	for _, line := range lines {
 		indent, name, isDir, err := parseTreeLine(line)
 		if err != nil {
-			continue // skip empty/comment-only lines
+			continue // skip baris kosong/komentar
 		}
 
-		// Handle root (first non-empty line that is a dir)
-		if i == 0 && isDir {
+		// Handle root (indent 0 dan stack kosong)
+		if len(pathStack) == 0 {
 			if !isValidFileName(name) {
 				return fmt.Errorf("invalid root name: %q", name)
 			}
 			if err := os.MkdirAll(name, 0755); err != nil {
 				return err
 			}
-			pathStack = []string{name}
+			if isDir {
+				pathStack = []string{name}
+			} else {
+				// Root adalah file — jarang, tapi mungkin
+				f, err := os.Create(name)
+				if err != nil {
+					return err
+				}
+				f.Close()
+				// Tidak push ke stack karena bukan direktori
+			}
 			continue
 		}
 
-		if !isValidFileName(name) {
-			return fmt.Errorf("invalid name at line %d: %q", i+1, name)
+		// Sesuaikan stack sesuai indent
+		if indent < 0 {
+			indent = 0
 		}
-
-		// Sesuaikan pathStack berdasarkan indent
 		if indent >= len(pathStack) {
+			// Tidak boleh lompat level, batasi ke level terakhir
 			indent = len(pathStack) - 1
 		}
 		pathStack = pathStack[:indent+1]
@@ -270,17 +140,17 @@ func createStructure(lines []string) error {
 
 		if isDir {
 			if err := os.MkdirAll(fullPath, 0755); err != nil {
-				return err
+				return fmt.Errorf("failed to create dir %s: %v", fullPath, err)
 			}
 			pathStack = append(pathStack, name)
 		} else {
 			dir := filepath.Dir(fullPath)
 			if err := os.MkdirAll(dir, 0755); err != nil {
-				return err
+				return fmt.Errorf("failed to create parent dir %s: %v", dir, err)
 			}
 			f, err := os.Create(fullPath)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to create file %s: %v", fullPath, err)
 			}
 			f.Close()
 		}
@@ -308,36 +178,14 @@ func readInput() ([]string, string, error) {
 	return strings.Split(content, "\n"), "clipboard", nil
 }
 
-func fileCheck(path string) {
-	// recursive scanner of all of files to check if file is empty or not
-	err := filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			log.Println("Error:", err)
+func isValidStructure(lines []string) bool {
+	for _, line := range lines {
+		_, _, _, err := parseTreeLine(line)
+		if err == nil {
+			return true
 		}
-
-		if d.IsDir() {
-			// continue
-			return nil
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			log.Println("Error:", err)
-		}
-
-		if info.Size() == 0 {
-			// re-print structur and add "[empty] tag"
-		} else {
-			// just pass
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		log.Fatal(err)
 	}
-
+	return false
 }
 
 func main() {
@@ -361,24 +209,4 @@ func main() {
 	}
 
 	fmt.Println("✅ Done!")
-}
-
-// func isValidStructure(lines []string) bool {
-// 	count := 0
-// 	for _, line := range lines {
-// 		if strings.TrimRight(strings.TrimLeft(line, " \t"), " \t\r\n") != "" {
-// 			count++
-// 		}
-// 	}
-// 	return count > 0
-// }
-
-func isValidStructure(lines []string) bool {
-	for _, line := range lines {
-		_, _, _, err := parseTreeLine(line)
-		if err == nil {
-			return true
-		}
-	}
-	return false
 }

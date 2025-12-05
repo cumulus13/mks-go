@@ -22,3 +22,8 @@ main_go*
 
 # Added entries (1 items)
 *sublime*
+# PT backup directory
+.pt/
+
+# Added entries (1 items)
+test/
