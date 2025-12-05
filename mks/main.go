@@ -1,3 +1,9 @@
+// File: mks\main.go
+// Author: Hadi Cahyadi <cumulus13@gmail.com>
+// Date: 2025-12-05
+// Description: 
+// License: MIT
+
 package main
 
 import (
@@ -11,7 +17,6 @@ import (
 
 // parseTreeLine mengembalikan (indentLevel, name, isDir)
 func parseTreeLine(line string) (int, string, bool, error) {
-	// Hapus komentar
 	if i := strings.Index(line, "#"); i >= 0 {
 		line = line[:i]
 	}
@@ -20,7 +25,7 @@ func parseTreeLine(line string) (int, string, bool, error) {
 		return 0, "", false, fmt.Errorf("empty")
 	}
 
-	// Ambil seluruh bagian setelah karakter terakhir yang bukan bagian dari nama
+	// Retrieve all parts after the last character that are not part of the name
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
 		return 0, "", false, fmt.Errorf("no fields")
@@ -35,15 +40,15 @@ func parseTreeLine(line string) (int, string, bool, error) {
 		return 0, "", false, fmt.Errorf("invalid name: %q", name)
 	}
 
-	// Sekarang hitung indent: cari posisi awal nama asli dalam line
+	// Now calculate the indent: find the starting position of the real name in the line
 	nameStart := strings.LastIndex(line, name)
 	if nameStart == -1 {
-		// fallback: anggap indent 0
+		// fallback: assume indent is 0
 		return 0, name, isDir, nil
 	}
 
 	prefix := line[:nameStart]
-	// Normalisasi prefix: ganti semua non-spasi jadi spasi
+	// Prefix normalization: replace all non-spaces with spaces
 	var norm strings.Builder
 	for _, c := range prefix {
 		if c == ' ' || c == '\t' {
@@ -101,10 +106,10 @@ func createStructure(lines []string) error {
 	for _, line := range lines {
 		indent, name, isDir, err := parseTreeLine(line)
 		if err != nil {
-			continue // skip baris kosong/komentar
+			continue // skip empty lines/comments
 		}
 
-		// Handle root (indent 0 dan stack kosong)
+		// Handle root (indent 0 and empty stack)
 		if len(pathStack) == 0 {
 			if !isValidFileName(name) {
 				return fmt.Errorf("invalid root name: %q", name)
@@ -115,23 +120,23 @@ func createStructure(lines []string) error {
 			if isDir {
 				pathStack = []string{name}
 			} else {
-				// Root adalah file — jarang, tapi mungkin
+				// Root is a file — rare, but possible
 				f, err := os.Create(name)
 				if err != nil {
 					return err
 				}
 				f.Close()
-				// Tidak push ke stack karena bukan direktori
+				// Doesn't push to the stack because it's not a directory
 			}
 			continue
 		}
 
-		// Sesuaikan stack sesuai indent
+		// Adjust the stack according to the indent
 		if indent < 0 {
 			indent = 0
 		}
 		if indent >= len(pathStack) {
-			// Tidak boleh lompat level, batasi ke level terakhir
+			// Can't jump levels, limit to the last level
 			indent = len(pathStack) - 1
 		}
 		pathStack = pathStack[:indent+1]
