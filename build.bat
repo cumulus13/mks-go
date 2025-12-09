@@ -16,7 +16,11 @@ if not %errorlevel%==0 (
 ) else (
     echo.
     echo Build Success! Copying files...
-    copy /y mks.exe "%DEST_DIR%"
+    :: copy /y mks.exe "%DEST_DIR%"
+    mkdir test
+    copy /y mks.exe test
+    cd test
+    ls
     echo.
     echo [COMPLETE] Files successfully copied to %DEST_DIR%
 )
